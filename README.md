@@ -1,6 +1,5 @@
 # PocketShield
-
-PocketShield is a mobile safety prototype that lets a person prepare a small set of trusted contacts and hand gestures in advance. When the person shakes the phone, the app opens a front-facing camera. Holding one of the saved gestures in view for two seconds brings up options to prepare an emergency message. Afterward, the person can choose whether to record and share a short video clip.
+PocketShield is an emergency safety app prototype designed to help you alert the people you trust when you may be in danger. After setting up your emergency contacts and choosing one or two hand gestures, shake your phone to open the safety camera. Hold either saved gesture for two seconds, and PocketShield prepares an alert with the time and your location when available. You can share the alert through SMS or WhatsApp, then record and share a short video. Having your location link ready and the video recording flow close at hand can save you from composing those details from scratch in a stressful moment. You still choose recipients and confirm sending in the messaging or sharing app.
 
 The app is built with Expo, React Native, and TypeScript. It currently targets iOS and Android, with Expo Router providing the app's route structure.
 

@@ -1,5 +1,6 @@
 import * as Location from "expo-location";
-import { Linking } from "react-native";
+import * as SMS from "expo-sms";
+import { Linking, Share } from "react-native";
 import { EmergencyContact, getEmergencyContacts } from "@/utils/storage";
 
 export async function getEmergencyLocationText(): Promise<string> {
@@ -22,6 +23,47 @@ export async function getEmergencyLocationText(): Promise<string> {
 }
 
 export type AlertChannel = "whatsapp" | "sms";
+
+export type SMSBatchResult = {
+  total: number;
+  sent: number;
+  unverified: number;
+  cancelled: boolean;
+};
+
+export async function openEmergencySmsSeparately(
+  contacts: EmergencyContact[],
+  locationText: string,
+): Promise<SMSBatchResult> {
+  const addresses = [...new Set(
+    contacts.map((contact) => contact.phone?.trim()).filter((phone): phone is string => Boolean(phone)),
+  )];
+  if (addresses.length === 0) throw new Error("No saved emergency contacts have phone numbers.");
+  if (!(await SMS.isAvailableAsync())) throw new Error("SMS is not available on this device.");
+
+  const timestamp = new Date().toLocaleString();
+  const message = `EMERGENCY ALERT\nI may be in danger.\nTime: ${timestamp}\nLocation: ${locationText}`;
+  const result: SMSBatchResult = { total: addresses.length, sent: 0, unverified: 0, cancelled: false };
+  for (const address of addresses) {
+    const response = await SMS.sendSMSAsync(address, message);
+    if (response.result === "cancelled") {
+      result.cancelled = true;
+      break;
+    }
+    if (response.result === "sent") result.sent += 1;
+    else result.unverified += 1;
+  }
+  return result;
+}
+
+export async function openEmergencyWhatsAppShare(locationText: string) {
+  const timestamp = new Date().toLocaleString();
+  const message = `EMERGENCY ALERT\nI may be in danger.\nTime: ${timestamp}\nLocation: ${locationText}`;
+  return Share.share(
+    { message, title: "PocketShield Emergency Alert" },
+    { dialogTitle: "Choose WhatsApp and a recipient" },
+  );
+}
 
 export async function openEmergencyAlertDraft(
   contact: EmergencyContact,

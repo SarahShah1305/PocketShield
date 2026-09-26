@@ -11,17 +11,30 @@ import { toByteArray } from "base64-js";
 import { manipulateAsync, SaveFormat } from "expo-image-manipulator";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useEffect, useRef, useState } from "react";
-import { ActivityIndicator, Alert, StyleSheet, Text, View } from "react-native";
-import { getEmergencyContacts } from "@/utils/storage";
+import { ActivityIndicator, Alert, Share, StyleSheet, Text, View } from "react-native";
 import {
-  detectEmergencyGesture,
+  EMERGENCY_GESTURES,
+  getEmergencyContacts,
+  getSelectedGestures,
+  type EmergencyGesture,
+} from "@/utils/storage";
+import {
+  getEmergencyLocationText,
+  openEmergencySmsSeparately,
+  openEmergencyWhatsAppShare,
+} from "@/services/alert-service";
+import {
+  detectEmergencyGestures,
   isRealEmergency,
-  PREDEFINED_EMERGENCY_GESTURE,
 } from "@/logic/ai-decision";
 
-const DETECTION_INTERVAL_MS = 700;
-const GESTURE_CONFIRMATION_FRAMES = 3;
+const DETECTION_INTERVAL_MS = 200;
+const GESTURE_HOLD_DURATION_MS = 2_000;
 const CAMERA_TIMEOUT_MS = 60_000;
+
+  function gestureLabel(gesture: EmergencyGesture): string {
+  return EMERGENCY_GESTURES.find((item) => item.id === gesture)?.label ?? "Gesture";
+}
 
 let detectorPromise: Promise<HandDetector> | null = null;
 
@@ -67,6 +80,10 @@ export default function GestureScreen() {
 
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let selectedGestures: EmergencyGesture[] = [];
+    let confirmedGesture: EmergencyGesture | null = null;
+    let holdStartedAt = 0;
+    let locationPromise: Promise<string> | null = null;
     let hasLoggedHandLandmarks = false;
     let noHandFrames = 0;
     const timeout = setTimeout(() => {
@@ -74,6 +91,18 @@ export default function GestureScreen() {
       console.log("Gesture check timed out");
       router.back();
     }, CAMERA_TIMEOUT_MS);
+
+    function promptForVideo(message: string) {
+      Alert.alert(
+        "Send a video too?",
+        message,
+        [
+          { text: "Not now", style: "cancel", onPress: () => router.replace("/") },
+          { text: "Record video", onPress: () => router.replace("/video-alert") },
+        ],
+        { cancelable: false },
+      );
+    }
 
     async function inspectFrame(detector: HandDetector) {
       if (cancelled || alreadyAlerted.current) return;
@@ -119,39 +148,48 @@ export default function GestureScreen() {
           if (hands.length === 0) {
             setStatus("No hand detected. Hold your full hand in the camera view.");
           } else {
-            setStatus("Hand detected. Hold a clear thumbs-up steady.");
+            setStatus("Hand detected. Show one of your saved gestures clearly.");
           }
-          const detectedGesture = hands[0]
-            ? detectEmergencyGesture(
+          const detectedGestures = hands[0]
+            ? detectEmergencyGestures(
                 hands[0].keypoints.map((point) => ({
                   name: point.name ?? "",
                   x: point.x,
                   y: point.y,
                 })),
               )
-            : null;
+            : [];
+          const detectedGesture = selectedGestures.find((gesture) => detectedGestures.includes(gesture)) ?? null;
 
-          if (detectedGesture === PREDEFINED_EMERGENCY_GESTURE) {
-            confirmationCount.current += 1;
+          if (detectedGesture) {
+            if (confirmedGesture !== detectedGesture) {
+              confirmedGesture = detectedGesture;
+              holdStartedAt = Date.now();
+            }
+            const holdMs = Date.now() - holdStartedAt;
+            confirmationCount.current = Math.min(holdMs, GESTURE_HOLD_DURATION_MS);
             setStatus(
-              `Thumbs-up recognized ${confirmationCount.current}/${GESTURE_CONFIRMATION_FRAMES}`,
+              `Hold ${gestureLabel(detectedGesture)} for ${Math.max(0, (GESTURE_HOLD_DURATION_MS - holdMs) / 1_000).toFixed(1)} more seconds`,
             );
           } else {
             confirmationCount.current = 0;
+            confirmedGesture = null;
+            holdStartedAt = 0;
           }
 
           console.log(
-            `Gesture frames ${confirmationCount.current}/${GESTURE_CONFIRMATION_FRAMES}`,
+            `Gesture hold ${confirmationCount.current}/${GESTURE_HOLD_DURATION_MS}ms`,
           );
 
           if (
-            confirmationCount.current >= GESTURE_CONFIRMATION_FRAMES &&
+            confirmationCount.current >= GESTURE_HOLD_DURATION_MS &&
             isRealEmergency(shakeTimestamp)
           ) {
             alreadyAlerted.current = true;
             cancelled = true;
             clearTimeout(timeout);
-            console.log("Predefined thumbs-up gesture confirmed");
+            const label = gestureLabel(confirmedGesture ?? selectedGestures[0]);
+            console.log(`Saved ${label} gesture confirmed`);
             const contacts = await getEmergencyContacts();
             if (contacts.length === 0) {
               setStatus("No emergency contact has been saved.");
@@ -163,16 +201,61 @@ export default function GestureScreen() {
               return;
             }
 
-            setStatus("Thumbs-up detected. Continue to get GPS and choose recipients.");
+            setStatus(`${label} detected. Preparing SMS to all saved contacts.`);
             Alert.alert(
-              "Gesture detected",
-              "Thumbs-up confirmed. Continue to get your GPS location, then choose which contacts to alert.",
+              "Emergency gesture detected",
+              `${label} confirmed. Choose how to share your alert. SMS opens a separate draft for each saved contact; tap Send once per person. WhatsApp opens the share sheet so you can choose an individual chat or a group.`,
               [
                 {
-                  text: "Continue",
+                  text: "Cancel",
+                  style: "cancel",
+                },
+                {
+                  text: "SMS separately",
                   onPress: () => {
-                    setStatus("Getting GPS and loading saved contacts…");
-                    router.replace("/alert-recipients");
+                    void (async () => {
+                      try {
+                        setStatus("Opening a separate SMS draft for each contact…");
+                        const location = await (locationPromise ?? getEmergencyLocationText());
+                        const result = await openEmergencySmsSeparately(contacts, location);
+                        if (result.cancelled) {
+                          setStatus(`SMS stopped after ${result.sent} of ${result.total} contacts.`);
+                        } else if (result.unverified > 0) {
+                          setStatus(`Opened SMS drafts for ${result.total} contacts; delivery could not be confirmed by the device.`);
+                        } else {
+                          setStatus(`Messages reports send was initiated for ${result.sent} contacts; delivery is not confirmed.`);
+                        }
+                        if (result.sent + result.unverified > 0) {
+                          promptForVideo("Record up to 10 seconds, then choose WhatsApp and select who should receive the clip.");
+                        }
+                      } catch (error) {
+                        const message = error instanceof Error ? error.message : String(error);
+                        setStatus("Could not open the emergency SMS draft.");
+                        Alert.alert("Could not open SMS", message);
+                      }
+                    })();
+                  },
+                },
+                {
+                  text: "WhatsApp",
+                  onPress: () => {
+                    void (async () => {
+                      try {
+                        setStatus("Opening WhatsApp sharing options…");
+                        const location = await (locationPromise ?? getEmergencyLocationText());
+                        const result = await openEmergencyWhatsAppShare(location);
+                        if (result.action === Share.dismissedAction) {
+                          setStatus("WhatsApp sharing cancelled.");
+                        } else {
+                          setStatus("WhatsApp sharing returned.");
+                          promptForVideo("If you sent the alert, record up to 10 seconds and choose WhatsApp recipients for the clip.");
+                        }
+                      } catch (error) {
+                        const message = error instanceof Error ? error.message : String(error);
+                        setStatus("Could not open sharing options.");
+                        Alert.alert("Could not open sharing options", message);
+                      }
+                    })();
                   },
                 },
               ],
@@ -200,9 +283,15 @@ export default function GestureScreen() {
     void (async () => {
       try {
         setStatus("Loading hand detector…");
+        selectedGestures = await getSelectedGestures();
+        if (selectedGestures.length === 0) {
+          router.replace("/setup/gestures");
+          return;
+        }
+        locationPromise = getEmergencyLocationText();
         const detector = await loadHandDetector();
         if (cancelled) return;
-        setStatus("Show a thumbs-up to confirm the emergency.");
+        setStatus(`Hold ${selectedGestures.map(gestureLabel).join(" or ")} steadily for 2 seconds.`);
         await inspectFrame(detector);
       } catch (caught) {
         const message = caught instanceof Error ? caught.message : String(caught);

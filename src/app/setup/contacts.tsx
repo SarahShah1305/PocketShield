@@ -190,7 +190,7 @@ export default function ContactsSetupScreen() {
     Alert.alert(
       "Emergency contacts saved",
       `${verified.length} contact${verified.length === 1 ? "" : "s"} saved: ${verified.map((item) => item.name).join(", ")}`,
-      [{ text: "Continue", onPress: () => router.replace("/") }],
+      [{ text: "Continue", onPress: () => router.replace("/setup/gestures") }],
     );
   }
 

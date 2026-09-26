@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "PocketShield-ShakeDetector",
+    "name": "PocketShield",
     "slug": "PocketShield-ShakeDetector",
     "version": "1.0.0",
     "orientation": "portrait",
@@ -25,6 +25,14 @@
     },
     "plugins": [
       "expo-router",
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Allow PocketShield to use the camera for gesture detection and emergency video.",
+          "microphonePermission": "Allow PocketShield to record audio in emergency video clips.",
+          "recordAudioAndroid": true
+        }
+      ],
       [
         "expo-splash-screen",
         {
